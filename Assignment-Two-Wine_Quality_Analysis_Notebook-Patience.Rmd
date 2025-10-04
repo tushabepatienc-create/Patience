@@ -1,0 +1,157 @@
+---
+title: Wine Quality Analysis assignment two
+date: "`r Sys.Date()`"
+output: r_notebook
+---
+
+# 1. Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# 2. Load Libraries
+
+```{r}
+library(tidyverse)
+library(caret)
+library(FactoMineR)
+library(factoextra)
+library(Rtsne)
+library(umap)
+library(corrplot)
+library(gridExtra)
+library(plotly)
+library(cluster)
+
+set.seed(42)
+```
+
+# 3. Load Dataset
+
+```{r}
+wine_df <- read.csv("https://archive.ics.uci.edu/ml/machine-learning-databases/wine-quality/winequality-red.csv", sep = ";")
+
+cat("Dataset dimensions:", dim(wine_df), "\n")
+head(wine_df)
+str(wine_df)
+summary(wine_df)
+```
+
+# 4. Data Cleaning
+
+```{r}
+missing_values <- colSums(is.na(wine_df))
+print(missing_values)
+
+duplicates <- sum(duplicated(wine_df))
+wine_df <- wine_df[!duplicated(wine_df), ]
+
+identify_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25)
+  Q3 <- quantile(x, 0.75)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  return(x < lower_bound | x > upper_bound)
+}
+
+cap_outliers <- function(x) {
+  Q1 <- quantile(x, 0.25, na.rm = TRUE)
+  Q3 <- quantile(x, 0.75, na.rm = TRUE)
+  IQR <- Q3 - Q1
+  lower_bound <- Q1 - 1.5 * IQR
+  upper_bound <- Q3 + 1.5 * IQR
+  x[x < lower_bound] <- lower_bound
+  x[x > upper_bound] <- upper_bound
+  return(x)
+}
+
+wine_clean <- wine_df
+wine_clean[, -ncol(wine_clean)] <- apply(wine_clean[, -ncol(wine_clean)], 2, cap_outliers)
+
+preprocess_params <- preProcess(wine_clean[, -ncol(wine_clean)], method = c("center", "scale"))
+wine_scaled <- predict(preprocess_params, wine_clean)
+wine_scaled$quality <- wine_clean$quality
+```
+
+# 5. Feature Analysis
+
+```{r}
+variances <- apply(wine_scaled[, -ncol(wine_scaled)], 2, var)
+low_variance_features <- names(variances[variances < 0.1])
+
+correlation_matrix <- cor(wine_scaled[, -ncol(wine_scaled)])
+corrplot(correlation_matrix, method = "color", type = "upper", order = "hclust")
+
+high_corr <- findCorrelation(correlation_matrix, cutoff = 0.7, names = TRUE)
+features_to_keep <- setdiff(colnames(wine_scaled[, -ncol(wine_scaled)]), high_corr)
+wine_reduced <- wine_scaled[, c(features_to_keep, "quality")]
+```
+```{r}
+# Remove duplicate rows
+wine_reduced <- wine_reduced[!duplicated(wine_reduced), ]
+
+# Or with dplyr (tidyverse)
+wine_reduced <- wine_reduced %>% distinct()
+
+# Check if any duplicates remain
+sum(duplicated(wine_reduced))
+
+
+```
+
+# 6. Dimensionality Reduction
+
+```{r}
+X <- wine_reduced[, -ncol(wine_reduced)]
+y <- wine_reduced$quality
+
+pca_result <- PCA(X, graph = FALSE)
+
+tsne_result <- Rtsne(X, dims = 2, perplexity = 30, verbose = FALSE, max_iter = 500)
+
+umap_config <- umap.defaults
+umap_config$random_state <- 42
+umap_result <- umap(X, config = umap_config)
+
+calculate_silhouette <- function(data, n_clusters = 5) {
+  kmeans_result <- kmeans(data, centers = n_clusters, nstart = 25)
+  sil_score <- silhouette(kmeans_result$cluster, dist(data))
+  return(mean(sil_score[, 3]))
+}
+
+pca_sil <- calculate_silhouette(pca_result$ind$coord[, 1:2])
+tsne_sil <- calculate_silhouette(tsne_result$Y)
+umap_sil <- calculate_silhouette(umap_result$layout)
+```
+
+# 7. Visualization
+
+```{r}
+pca_df <- data.frame(PC1 = pca_result$ind$coord[, 1],
+                     PC2 = pca_result$ind$coord[, 2],
+                     Quality = as.factor(y))
+
+tsne_df <- data.frame(TSNE1 = tsne_result$Y[, 1],
+                      TSNE2 = tsne_result$Y[, 2],
+                      Quality = as.factor(y))
+
+umap_df <- data.frame(UMAP1 = umap_result$layout[, 1],
+                      UMAP2 = umap_result$layout[, 2],
+                      Quality = as.factor(y))
+
+p1 <- ggplot(pca_df, aes(PC1, PC2, color = Quality)) + geom_point(alpha=0.7) + theme_minimal()
+p2 <- ggplot(tsne_df, aes(TSNE1, TSNE2, color = Quality)) + geom_point(alpha=0.7) + theme_minimal()
+p3 <- ggplot(umap_df, aes(UMAP1, UMAP2, color = Quality)) + geom_point(alpha=0.7) + theme_minimal()
+
+grid.arrange(p1, p2, p3, ncol=2)
+```
+
+# 8. Reflection
+
+```{r}
+cat("Silhouette Scores: PCA =", round(pca_sil,3),
+    "t-SNE =", round(tsne_sil,3),
+    "UMAP =", round(umap_sil,3))
+```
